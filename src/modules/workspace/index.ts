@@ -37,6 +37,7 @@ import { WORKSPACE_FS_EVENT_TYPES, opToEventType } from './types.js';
 import { MountWatcher, type FsChange } from './watcher.js';
 import {
   syncFromFs,
+  refreshSubtreeFromFs,
   materializeToFs,
   hashContent,
   isBinary,
@@ -2058,6 +2059,27 @@ export class WorkspaceModule implements Module {
     return { success: true, data: { path: input.path, deleted: true } };
   }
 
+  /**
+   * Make a listing (ls/glob/grep) reflect disk. Always does the one-time
+   * initial sync; for 'on-agent-action' mounts, which have no watcher, it also
+   * re-reads the listed subtree so files created outside the workspace tools
+   * (e.g. a shell) appear. Returns binary files under that subtree — the tree
+   * is text-only, so listings add them separately.
+   */
+  private async refreshForListing(
+    store: JsStore,
+    mount: MountState,
+    relativePath: string,
+  ): Promise<Array<{ path: string; size: number }>> {
+    if (!mount.initialSyncDone) {
+      await syncFromFs(store, mount);
+      mount.initialSyncDone = true;
+    }
+    if (mount.config.watch !== 'on-agent-action') return [];
+    const { binaries } = await refreshSubtreeFromFs(store, mount, relativePath);
+    return binaries;
+  }
+
   private async handleLs(input: LsInput): Promise<ToolResult> {
     const store = this.getStore();
 
@@ -2072,26 +2094,20 @@ export class WorkspaceModule implements Module {
     }
 
     const { mount, relativePath } = this.parsePath(input.path);
-
-    // Ensure initial sync — always sync on first access regardless of watch mode,
-    // so that ls/glob/grep see filesystem contents even for unwatched mounts
-    if (!mount.initialSyncDone) {
-      await syncFromFs(store, mount);
-      mount.initialSyncDone = true;
-    }
+    const binaries = await this.refreshForListing(store, mount, relativePath);
 
     const prefix = relativePath ? relativePath + '/' : '';
-    const entries = store.treeList(mount.treeStateId, prefix || undefined);
+    const entries: Array<{ path: string; size: number; binary?: true }> = [
+      ...store.treeList(mount.treeStateId, prefix || undefined).map(e => ({ path: e.path, size: e.size })),
+      ...binaries.map(b => ({ ...b, binary: true as const })),
+    ].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
     if (input.recursive) {
       return {
         success: true,
         data: {
           path: input.path,
-          entries: entries.map(e => ({
-            path: e.path,
-            size: e.size,
-          })),
+          entries,
           count: entries.length,
         },
       };
@@ -2099,7 +2115,7 @@ export class WorkspaceModule implements Module {
 
     // Non-recursive: deduplicate to show immediate children only
     const seen = new Set<string>();
-    const children: Array<{ name: string; type: 'file' | 'directory' }> = [];
+    const children: Array<{ name: string; type: 'file' | 'directory'; binary?: true }> = [];
 
     for (const entry of entries) {
       const rest = entry.path.slice(prefix.length);
@@ -2111,7 +2127,7 @@ export class WorkspaceModule implements Module {
           children.push({ name: dirName, type: 'directory' });
         }
       } else {
-        children.push({ name: rest, type: 'file' });
+        children.push(entry.binary ? { name: rest, type: 'file', binary: true } : { name: rest, type: 'file' });
       }
     }
 
@@ -2136,13 +2152,10 @@ export class WorkspaceModule implements Module {
       : [...this.mounts.values()].map(m => ({ mount: m, relativePath: '' }));
 
     for (const { mount, relativePath } of mountsToSearch) {
-      if (!mount.initialSyncDone) {
-        await syncFromFs(store, mount);
-        mount.initialSyncDone = true;
-      }
+      const binaries = await this.refreshForListing(store, mount, relativePath);
 
       const prefix = relativePath ? relativePath + '/' : undefined;
-      const entries = store.treeList(mount.treeStateId, prefix);
+      const entries = [...store.treeList(mount.treeStateId, prefix), ...binaries];
 
       for (const entry of entries) {
         const testPath = relativePath ? entry.path.slice(relativePath.length + 1) : entry.path;
@@ -2182,10 +2195,7 @@ export class WorkspaceModule implements Module {
     const results: Array<{ file: string; matches: Array<{ line: number; text: string; context?: string[] }> }> = [];
 
     for (const { mount, relativePath } of mountsToSearch) {
-      if (!mount.initialSyncDone) {
-        await syncFromFs(store, mount);
-        mount.initialSyncDone = true;
-      }
+      await this.refreshForListing(store, mount, relativePath);
 
       // If `path` points at a single FILE, grep just that file. Otherwise treat
       // `path` as a directory prefix (the original behaviour). Previously a file

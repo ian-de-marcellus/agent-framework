@@ -19,7 +19,10 @@ export interface MountConfig {
   /**
    * Watch mode for filesystem changes:
    * - 'always': chokidar watches continuously, syncs on debounce
-   * - 'on-agent-action': sync from filesystem after each agent tool call
+   * - 'on-agent-action': no watcher; ls/glob/grep re-read the subtree they
+   *   are about to answer from disk first, so files created outside the
+   *   workspace tools (a shell, another process) show up. Binary files are
+   *   listed (flagged `binary`) but, as always, not synced into the tree.
    * - 'never': fully virtual, no automatic filesystem reads
    */
   watch?: 'always' | 'on-agent-action' | 'never';
@@ -105,6 +108,11 @@ export interface MountState {
   watcherReadyAt: number | null;
   /** Most recent chokidar error for this mount, if any. */
   watcherError: string | null;
+  /**
+   * Binary files seen on disk by listing refreshes ('on-agent-action'), with
+   * their size, so an unchanged binary isn't re-read on every listing.
+   */
+  knownBinaries?: Map<string, number>;
 }
 
 /**

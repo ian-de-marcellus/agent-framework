@@ -279,6 +279,61 @@ export async function materializeToFs(
 }
 
 /**
+ * Bring one subtree of the tree up to date with disk, cheaply: sync only files
+ * that appeared, disappeared, or changed size since the tree last saw them.
+ * For mounts without a watcher ('on-agent-action'), called before a listing.
+ *
+ * Returns the binary files currently on disk under `prefix` — the tree is
+ * text-only, so listings add these separately.
+ */
+export async function refreshSubtreeFromFs(
+  store: JsStore,
+  mount: MountState,
+  prefix: string,
+): Promise<{ result: SyncResult; binaries: Array<{ path: string; size: number }> }> {
+  const under = (p: string) => !prefix || p.startsWith(prefix + '/');
+  const root = prefix ? safePath(mount.config.path, prefix) : mount.config.path;
+
+  const onDisk = new Map<string, number>();
+  if (root) {
+    for (const rel of await walkDirectory(root, mount.config.ignore ?? [])) {
+      const path = prefix ? `${prefix}/${rel}` : rel;
+      try {
+        const s = await stat(join(root, rel));
+        if (s.isFile()) onDisk.set(path, s.size);
+      } catch { /* vanished mid-walk */ }
+    }
+  }
+
+  const known = (mount.knownBinaries ??= new Map());
+  const toSync: string[] = [];
+  const inTree = new Set<string>();
+  for (const entry of store.treeList(mount.treeStateId, prefix ? prefix + '/' : undefined)) {
+    inTree.add(entry.path);
+    const size = onDisk.get(entry.path);
+    if (size === undefined || size !== entry.size) toSync.push(entry.path); // deleted or changed
+  }
+  for (const [path, size] of onDisk) {
+    if (!inTree.has(path) && known.get(path) !== size) toSync.push(path);
+  }
+
+  const result = toSync.length
+    ? await syncFromFs(store, mount, toSync)
+    : { synced: [], conflicts: [], skipped: [] };
+
+  for (const s of result.skipped) {
+    if (s.reason.startsWith('binary file')) known.set(s.path, onDisk.get(s.path) ?? 0);
+  }
+  for (const path of [...known.keys()]) {
+    if (under(path) && !onDisk.has(path)) known.delete(path);
+  }
+  const binaries = [...known]
+    .filter(([path]) => under(path))
+    .map(([path, size]) => ({ path, size }));
+  return { result, binaries };
+}
+
+/**
  * Walk a directory recursively, respecting ignore patterns.
  */
 async function walkDirectory(
