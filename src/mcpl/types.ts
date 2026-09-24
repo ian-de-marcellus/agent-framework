@@ -263,6 +263,19 @@ export interface McplServerConfig {
    */
   allowHostCommands?: boolean;
 
+  /**
+   * Narrow host-owned authority for this surface to request an isolated,
+   * no-tools image reading (host/command 'image-triage'). Grants none of the
+   * allowHostCommands verbs; the operator fixes the model and ceilings here.
+   */
+  hostImageTriage?: {
+    model: string;
+    /** Output token ceiling (default 2048, max 16384). */
+    maxTokens?: number;
+    /** Decoded image byte ceiling (default 4 MiB, max 10 MiB). */
+    maxImageBytes?: number;
+  };
+
   /** Feature sets to enable on connect */
   enabledFeatureSets?: string[];
 

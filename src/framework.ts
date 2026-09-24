@@ -883,6 +883,13 @@ interface HostCommandParams {
   force?: boolean;
   requesterId?: string;
   requesterName?: string;
+  /** For `image-triage`: the reading prompt, the per-image instruction, and
+   *  one image. The operator's McplServerConfig.hostImageTriage fixes the
+   *  model and output ceiling; the surface cannot choose them. */
+  prompt?: string;
+  instruction?: string;
+  image?: { data?: string; mimeType?: string };
+  attachmentId?: string;
 }
 
 /** Descriptor of a single refusal-driven rewind (see rewindTriggeringTurn). */
@@ -5256,6 +5263,70 @@ export class AgentFramework {
    *   host-status — report the quiesce state (drained / parked wakes /
    *   running background scripts).
    */
+  /**
+   * image-triage: a narrow host-owned service letting a surface (discord-mcpl's
+   * busy-room batching) get an image described without spending the
+   * resident's context. One direct model call: no tools, no resident history.
+   * The operator's hostImageTriage config fixes the model and output ceiling;
+   * the surface supplies only prompt, instruction, and one bounded image.
+   */
+  private async runHostImageTriage(
+    serverId: string,
+    agentName: string,
+    params: HostCommandParams,
+  ): Promise<{ ok: boolean; error?: string; output?: string; model?: string; maxTokens?: number }> {
+    const triage = this.mcplServerConfigs.get(serverId)?.hostImageTriage;
+    if (!triage?.model?.trim()) {
+      return { ok: false, error: 'image-triage is not authorized for this MCPL server' };
+    }
+    if (this.isAgentTerminal(agentName)) {
+      return { ok: false, error: `Resident "${agentName}" is retired; image triage is disabled.` };
+    }
+    const model = triage.model.trim();
+    const maxTokens = Math.min(Math.max(1, Math.floor(triage.maxTokens ?? 2_048)), 16_384);
+    const maxImageBytes = Math.min(Math.max(1, Math.floor(triage.maxImageBytes ?? 4 * 1024 * 1024)), 10 * 1024 * 1024);
+
+    const prompt = params.prompt?.trim();
+    const instruction = params.instruction?.trim();
+    if (!prompt || prompt.length > 20_000) return { ok: false, error: 'image-triage needs a prompt of 1-20000 characters' };
+    if (!instruction || instruction.length > 2_000) {
+      return { ok: false, error: 'image-triage needs an instruction of 1-2000 characters' };
+    }
+    const encoded = params.image?.data;
+    if (typeof encoded !== 'string' || encoded.length === 0 || encoded.length > Math.ceil(maxImageBytes / 3) * 4 + 4) {
+      return { ok: false, error: `image-triage needs one image of at most ${maxImageBytes} bytes` };
+    }
+    const bytes = Buffer.from(encoded, 'base64');
+    const mediaType = sniffImageMediaType(bytes);
+    if (bytes.length === 0 || bytes.length > maxImageBytes || !mediaType) {
+      return { ok: false, error: 'image-triage accepts one PNG, JPEG, GIF, or WebP image within the size ceiling' };
+    }
+
+    console.error(
+      `[image-triage] server=${JSON.stringify(serverId)} agent=${JSON.stringify(agentName)} ` +
+        `model=${JSON.stringify(model)} attachment=${/^\d{17,20}$/.test(params.attachmentId ?? '') ? params.attachmentId : 'unknown'} ` +
+        `bytes=${bytes.length}`,
+    );
+    const response = await this.membrane.complete({
+      system: prompt,
+      messages: [{
+        participant: 'User',
+        content: [
+          { type: 'text', text: instruction },
+          { type: 'image', source: { type: 'base64', data: bytes.toString('base64'), mediaType } },
+        ] as ContentBlock[],
+      }],
+      config: { model, maxTokens },
+    });
+    const output = response.content
+      .filter((b): b is ContentBlock & { type: 'text'; text: string } => b.type === 'text')
+      .map((b) => b.text)
+      .join('')
+      .trim();
+    if (!output) return { ok: false, error: 'image-triage model returned no text' };
+    return { ok: true, output, model, maxTokens };
+  }
+
   private async handleHostCommand(
     serverId: string,
     params: HostCommandParams,
@@ -5286,6 +5357,11 @@ export class AgentFramework {
     /** For `nudge`/`unstick`: the host is quiesced, so the request is parked
      *  until resume rather than running. */
     quiesced?: boolean;
+    /** For `image-triage`: the model's reading, and the operator-fixed
+     *  model/ceiling that produced it. */
+    output?: string;
+    model?: string;
+    maxTokens?: number;
     /** For `nudge`: agent state at queue time ('idle' = runs immediately,
      *  else it runs once the current turn settles). */
     agentStatus?: string;
@@ -5298,7 +5374,8 @@ export class AgentFramework {
       params.command !== 'quiesce' &&
       params.command !== 'resume' &&
       params.command !== 'maintain' &&
-      params.command !== 'host-status'
+      params.command !== 'host-status' &&
+      params.command !== 'image-triage'
     ) {
       return { ok: false, error: `Unknown host command: ${String(params.command)}` };
     }
@@ -5339,6 +5416,10 @@ export class AgentFramework {
     const agentName = params.agentName ?? [...this.agents.keys()][0];
     if (!agentName || !this.agents.has(agentName)) {
       return { ok: false, error: `Unknown agent: ${String(agentName)}` };
+    }
+
+    if (params.command === 'image-triage') {
+      return this.runHostImageTriage(serverId, agentName, params);
     }
 
     // nudge: queue an inference on the current context — no message, no

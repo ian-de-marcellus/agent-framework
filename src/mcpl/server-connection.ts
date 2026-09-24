@@ -120,6 +120,9 @@ export class McplServerConnection extends EventEmitter {
    *  grant cannot confer it — server params never decide admin authority. */
   allowHostCommands = false;
 
+  /** Separate, least-authority gate for the fixed-model isolated image reader. */
+  hostImageTriageEnabled = false;
+
   /**
    * The effective capability grant (§5.4) — the sole authorization
    * allowlist for this connection. Starts EMPTY: until the initial policy
@@ -338,10 +341,19 @@ export class McplServerConnection extends EventEmitter {
       // exists and none is invented here. Default DENY; only the operator's
       // config confers it (PR #79 review blocker 9: any server could
       // request undo/hide/unstick).
-      if (name === 'host-command' && !this.allowHostCommands) {
+      const hostCommandName = name === 'host-command'
+        ? (args[0] as { command?: unknown } | undefined)?.command
+        : undefined;
+      const narrowImageTriage =
+        hostCommandName === 'image-triage' && this.hostImageTriageEnabled;
+      if (name === 'host-command' && !this.allowHostCommands && !narrowImageTriage) {
         const responder = args[1] as { respondError?: (code: number, message: string, data?: unknown) => void } | undefined;
         if (responder?.respondError) {
-          responder.respondError(CAPABILITY_DISABLED, 'host/command requires host-owned authority (McplServerConfig.allowHostCommands)', {});
+          responder.respondError(
+            CAPABILITY_DISABLED,
+            'host/command requires host-owned authority (McplServerConfig.allowHostCommands, or hostImageTriage for image-triage only)',
+            {},
+          );
         } else {
           console.error(`[mcpl] ${this.id}: discarded host/command — allowHostCommands not set`);
         }
@@ -450,6 +462,7 @@ export class McplServerConnection extends EventEmitter {
     connection.droppedCapabilities = droppedCapabilities;
     connection.mcpToolsAdvertised = mcpToolsAdvertised;
     connection.allowHostCommands = config.allowHostCommands === true;
+    connection.hostImageTriageEnabled = !!config.hostImageTriage;
     connection.requestTimeoutMs = config.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
 
     // Store config for reconnection
@@ -897,6 +910,7 @@ export class McplServerConnection extends EventEmitter {
       this.droppedCapabilities = droppedCapabilities;
       this.mcpToolsAdvertised = mcpToolsAdvertised;
       this.allowHostCommands = this.config?.allowHostCommands === true;
+      this.hostImageTriageEnabled = !!this.config?.hostImageTriage;
       this.closed = false;
       this.nextRequestId = 1;
       this.pendingRequests.clear();
