@@ -3,6 +3,7 @@ import type { ContextStrategy } from '@animalabs/context-manager';
 import type { ToolCallId, ToolResult, ToolCall } from './events.js';
 
 export type SameRoundThinkTextPolicy = 'public' | 'private';
+export type ProseDeliveryMode = 'live' | 'terminal';
 export type SameRoundThinkTextPolicySource =
   | 'runtime_override'
   | 'recipe'
@@ -225,6 +226,18 @@ export interface AgentConfig {
    *   send externally; prose remains in Chronicle with a private suppression receipt.
    */
   proseRouting?: 'locus' | 'explicit' | 'hybrid' | 'disabled';
+
+  /**
+   * When ordinary prose is eligible for delivery (independent of proseRouting,
+   * which decides where it goes).
+   * - 'live' (default): stream prose as it is generated and publish each tool
+   *   round's prose as that round yields.
+   * - 'terminal': keep tool-round prose in Chronicle but off public channel
+   *   surfaces; publish only the prose after the turn's last tool round.
+   *   Text-only turns still publish once. Explicit send/publish tools are
+   *   unaffected. See docs/terminal-prose-delivery.md.
+   */
+  proseDelivery?: ProseDeliveryMode;
 
   /**
    * Fail-closed containment for a text response whose entire visible prose is

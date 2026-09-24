@@ -174,12 +174,17 @@ describe('present while acting', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  async function createFramework(): Promise<AgentFramework> {
+  async function createFramework(proseDelivery?: 'live' | 'terminal'): Promise<AgentFramework> {
     const framework = await AgentFramework.create({
       storePath: join(tempDir, 'test.chronicle'),
       membrane: membrane.asMembrane(),
       agents: [
-        { name: 'assistant', model: 'test-model', systemPrompt: 'You are a robot pilot.' },
+        {
+          name: 'assistant',
+          model: 'test-model',
+          systemPrompt: 'You are a robot pilot.',
+          ...(proseDelivery ? { proseDelivery } : {}),
+        },
       ],
       modules: [module],
     });
@@ -247,6 +252,87 @@ describe('present while acting', () => {
       ['chan-live-1', 'chan-live-1', 'chan-live-1'],
       'one locus resolution, pinned across the turn',
     );
+
+    await framework.stop();
+  });
+
+  it('terminal delivery keeps tool-round prose private and publishes only settled final prose', async () => {
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'Checking the first shelf.' },
+      { type: 'tool_use', id: 'c1', name: 'robot--move', input: { dir: 'north' } },
+    ] as ContentBlock[], 'tool_use'));
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'The index needs another pass.' },
+      { type: 'tool_use', id: 'c2', name: 'robot--move', input: { dir: 'east' } },
+    ] as ContentBlock[], 'tool_use'));
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'The catalogue is ready.' },
+    ] as ContentBlock[]));
+
+    const framework = await createFramework('terminal');
+    const routed = stubChannelRegistry(framework);
+    const outgoingChunks: string[] = [];
+    const outgoingCompletes: string[] = [];
+    const registry = (framework as unknown as {
+      channelRegistry: {
+        sendOutgoingChunk: (...args: unknown[]) => void;
+        sendOutgoingComplete: (...args: unknown[]) => void;
+      };
+    }).channelRegistry;
+    registry.sendOutgoingChunk = (...args) => outgoingChunks.push(JSON.stringify(args));
+    registry.sendOutgoingComplete = (...args) => outgoingCompletes.push(JSON.stringify(args));
+
+    trigger(framework);
+    await framework.runUntilIdle();
+
+    assert.deepEqual(
+      routed.map((r) => r.text),
+      ['The catalogue is ready.'],
+      'only prose after the final tool round becomes public speech',
+    );
+    assert.deepEqual(outgoingChunks, [], 'terminal mode emits no live prose preview chunks');
+    assert.deepEqual(outgoingCompletes, [], 'terminal mode opens no prose preview stream to finalize');
+
+    const cm = (framework as unknown as {
+      agents: Map<string, {
+        getContextManager(): {
+          getAllMessages(): Array<{ content: Array<{ type: string; text?: string }> }>;
+        };
+      }>;
+    }).agents.get('assistant')!.getContextManager();
+    const remembered = cm.getAllMessages()
+      .flatMap((m) => m.content)
+      .filter((b) => b.type === 'text')
+      .map((b) => b.text ?? '');
+    for (const text of [
+      'Checking the first shelf.',
+      'The index needs another pass.',
+      'The catalogue is ready.',
+    ]) {
+      assert.ok(remembered.includes(text), `Chronicle retained ${JSON.stringify(text)}`);
+    }
+
+    await framework.stop();
+  });
+
+  it('terminal delivery still publishes a text-only turn once at completion', async () => {
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'A settled answer.' },
+    ] as ContentBlock[]));
+
+    const framework = await createFramework('terminal');
+    const routed = stubChannelRegistry(framework);
+    const outgoingChunks: unknown[][] = [];
+    const registry = (framework as unknown as {
+      channelRegistry: { sendOutgoingChunk: (...args: unknown[]) => void };
+    }).channelRegistry;
+    registry.sendOutgoingChunk = (...args) => outgoingChunks.push(args);
+
+    trigger(framework);
+    await framework.runUntilIdle();
+
+    assert.deepEqual(routed.map((r) => r.text), ['A settled answer.']);
+    assert.deepEqual(outgoingChunks, [], 'settled delivery did not reopen live preview streaming');
 
     await framework.stop();
   });

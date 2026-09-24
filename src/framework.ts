@@ -9066,8 +9066,11 @@ export class AgentFramework {
     // would repost the transcript and leak thinking every round. When no
     // round was live-routed, the 'complete' case falls back to the
     // historical whole-turn routing so fallback-mode prose is still
-    // delivered exactly once, at turn end.
+    // delivered exactly once, at turn end. Terminal delivery
+    // (proseDelivery: 'terminal') keeps that fallback private too and
+    // publishes only the settled tail.
     let liveProseRouting = false;
+    const terminalProseDelivery = agent.proseDelivery === 'terminal';
 
     // Typing indicator: show "<agent> is typing…" for the whole duration of
     // this turn. Started here (paired with the finally below, so it can never
@@ -9121,6 +9124,7 @@ export class AgentFramework {
     // expose the wrapper before the fail-closed classifier runs.
     const proseStream = this.channelRegistry &&
       agent.proseRouting !== 'disabled' &&
+      !terminalProseDelivery &&
       !agent.toolWrapperProseGuard
       ? new ProseStreamRouter({
           mode: agent.proseRouting === 'explicit' ? 'explicit' : agent.proseRouting === 'hybrid' ? 'hybrid' : 'locus',
@@ -9335,6 +9339,14 @@ export class AgentFramework {
                       `[routing] ${agent.name}: mid-turn prose NOT routed (proseRouting=disabled)`,
                     );
                     this.recordProseSuppression(agent.name, roundSegments.length);
+                  } else if (terminalProseDelivery) {
+                    // Terminal delivery: these words stay first-class Chronicle
+                    // content but are not public speech, so they are not counted
+                    // as suppressed. Deliberate send/publish tools still run.
+                    console.error(
+                      `[routing] ${agent.name}: mid-turn round [${roundToolNames.join(', ')}] -> ` +
+                      `${roundSegments.length} prose segment(s) retained in Chronicle (proseDelivery=terminal)`,
+                    );
                   } else if (agent.proseRouting === 'hybrid') {
                     if (turnSilenced) {
                       this.recordProseSuppression(agent.name, roundSegments.length);
@@ -9779,7 +9791,11 @@ export class AgentFramework {
                 ? turnSilenced
                 : turnSilenced || toolNames.some(isSilencingTool);
 
-              const segments = splitProseSegments(liveProseRouting ? terminalContent : response.content);
+              // Terminal delivery never falls back to publishing the whole
+              // accumulated tool turn: terminalContent still identifies the
+              // prose after the final tool block even without roundContent.
+              const tailOnly = terminalProseDelivery || liveProseRouting;
+              const segments = splitProseSegments(tailOnly ? terminalContent : response.content);
 
               // Preserve in-channel ordering: everything enqueued live must
               // land before the trailing prose. Awaited even when silenced —
