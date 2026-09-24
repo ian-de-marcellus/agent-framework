@@ -86,6 +86,8 @@ export class Agent {
   readonly proseRouting: 'locus' | 'explicit' | 'hybrid' | 'disabled';
   /** Prose timing policy (see AgentConfig.proseDelivery). Default 'live'. */
   readonly proseDelivery: NonNullable<AgentConfig['proseDelivery']>;
+  /** Sticky speaking room config (see AgentConfig.speakingRoom). */
+  readonly speakingRoom: AgentConfig['speakingRoom'];
   /** Exact whole-response known-tool wrapper containment (default off). */
   readonly toolWrapperProseGuard: boolean;
   /** Prompt-cache TTL forwarded to the provider (see AgentConfig.cacheTtl). */
@@ -150,6 +152,7 @@ export class Agent {
     this.refusalHandling = config.refusalHandling;
     this.proseRouting = config.proseRouting ?? 'locus';
     this.proseDelivery = config.proseDelivery ?? 'live';
+    this.speakingRoom = config.speakingRoom;
     this.toolWrapperProseGuard = config.toolWrapperProseGuard ?? false;
     this.cacheTtl = config.cacheTtl ?? '1h';
     this.promptCaching = config.promptCaching ?? true;

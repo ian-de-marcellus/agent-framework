@@ -240,6 +240,16 @@ export interface AgentConfig {
   proseDelivery?: ProseDeliveryMode;
 
   /**
+   * Sticky speaking room ("lectern"). When set, the resident's ordinary speech
+   * goes to its chosen room every turn: inbound traffic — even an addressed
+   * message from another room, at turn start or mid-turn — never moves it.
+   * Only the resident's own channel_focus or channel_open does, and the choice
+   * persists across restarts (speaking-rooms.json beside the store).
+   * `initialChannel` seeds it when nothing is persisted yet.
+   */
+  speakingRoom?: { initialChannel: string };
+
+  /**
    * Fail-closed containment for a text response whose entire visible prose is
    * an invocation-shaped wrapper naming a tool registered on that exact turn.
    * The wrapper is neither executed nor stored as assistant continuity; a

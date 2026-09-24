@@ -1315,6 +1315,9 @@ export class AgentFramework {
   private terminatedConversationAgents: Set<string> = new Set();
   /** Null only for app-owned stores whose host supplied no seal path. */
   private readonly retirementPath: string | null;
+  /** Sticky speaking rooms (AgentConfig.speakingRoom), persisted beside the store. */
+  private speakingRooms = new Map<string, string>();
+  private speakingRoomsPath: string | null = null;
 
   private mcplTools: import('./types/index.js').ToolDefinition[] = [];
   /** Namespaced tool name → stateful feature-set attribution from tools/list. */
@@ -1583,6 +1586,7 @@ export class AgentFramework {
       }
       await framework.createAgent(agentConfig);
     }
+    framework.loadSpeakingRooms(config.storePath);
 
     // The subconscious resident (issue #77) registers after the residents so
     // it can never become primary; it is excluded from every broadcast
@@ -5263,6 +5267,57 @@ export class AgentFramework {
    *   host-status — report the quiesce state (drained / parked wakes /
    *   running background scripts).
    */
+  /** The resident's sticky speaking room, if it has one (AgentConfig.speakingRoom). */
+  private stickySpeakingRoom(agentName: string): string | null {
+    if (!this.agents.get(agentName)?.speakingRoom) return null;
+    return this.speakingRooms.get(agentName) ?? null;
+  }
+
+  /** Current sticky speaking room for an agent, or null (observers/tests). */
+  getSpeakingRoom(agentName: string): string | null {
+    return this.stickySpeakingRoom(agentName);
+  }
+
+  private setSpeakingRoom(agentName: string, channelId: string): void {
+    if (this.speakingRooms.get(agentName) === channelId) return;
+    this.speakingRooms.set(agentName, channelId);
+    if (!this.speakingRoomsPath) return;
+    try {
+      mkdirSync(dirname(this.speakingRoomsPath), { recursive: true });
+      const tmp = `${this.speakingRoomsPath}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ version: 1, rooms: Object.fromEntries(this.speakingRooms) }, null, 2));
+      renameSync(tmp, this.speakingRoomsPath);
+    } catch (err) {
+      console.error('[routing] failed to persist speaking rooms:', err);
+    }
+  }
+
+  /** Load sticky speaking rooms: the persisted file, else a one-time migration
+   *  from the retired attention sidecar (attention-queue.json speakingChannel),
+   *  else each agent's configured initialChannel. */
+  private loadSpeakingRooms(storePath: string | undefined): void {
+    this.speakingRoomsPath = storePath ? join(storePath, 'speaking-rooms.json') : null;
+    const read = (path: string): unknown => {
+      try { return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null; } catch { return null; }
+    };
+    const saved = this.speakingRoomsPath
+      ? (read(this.speakingRoomsPath) as { rooms?: Record<string, string> } | null)?.rooms ?? null
+      : null;
+    const legacy = !saved && storePath
+      ? (read(join(storePath, 'attention-queue.json')) as { residents?: Record<string, { speakingChannel?: string }> } | null)?.residents ?? null
+      : null;
+    for (const agent of this.agents.values()) {
+      if (!agent.speakingRoom) continue;
+      const room = saved?.[agent.name] ?? legacy?.[agent.name]?.speakingChannel ?? agent.speakingRoom.initialChannel;
+      if (typeof room === 'string' && room) this.speakingRooms.set(agent.name, room);
+    }
+    if (!saved && this.speakingRooms.size > 0 && this.speakingRoomsPath) {
+      const [first] = this.speakingRooms;
+      this.speakingRooms.delete(first[0]);
+      this.setSpeakingRoom(first[0], first[1]); // persists the whole map once
+    }
+  }
+
   /**
    * image-triage: a narrow host-owned service letting a surface (discord-mcpl's
    * busy-room batching) get an image described without spending the
@@ -7047,6 +7102,7 @@ export class AgentFramework {
           // diffs against what the agent was actually last told.
           if (
             (agent.proseRouting === 'locus' || agent.proseRouting === 'hybrid') &&
+            !this.stickySpeakingRoom(agent.name) &&
             !shouldEndTurn && !overBudget && currentState.stream
           ) {
             // Two signals qualify an injection to move the pin (n=6 + n=7):
@@ -8861,7 +8917,7 @@ export class AgentFramework {
         this.midTurnInputSignals.delete(agent.name);
         this.turnLocusPins.delete(agent.name);
       } else {
-        const locus = this.channelRegistry?.resolveLocus(agent.name) ?? null;
+        const locus = this.stickySpeakingRoom(agent.name) ?? this.channelRegistry?.resolveLocus(agent.name) ?? null;
         if (locus !== null) this.turnLocusPins.set(agent.name, locus);
         else this.turnLocusPins.delete(agent.name);
         this.midTurnInputSignals.delete(agent.name);
@@ -14207,12 +14263,15 @@ export class AgentFramework {
         // distance zero, the safest role there is — instead of a separate
         // window notice. lastAnnouncedLocus tracks it so announce-on-change
         // stays coherent. Locus-mode agents only: explicit mode has no pin.
-        if (call.name === 'channel_open' && result?.success) {
+        if ((call.name === 'channel_open' || call.name === 'channel_focus') && result?.success) {
           const opened =
             (result.data as { channelId?: string } | undefined)?.channelId
             ?? (call.input as { channelId?: string } | undefined)?.channelId;
           if (opened) {
             this.activeTriggerChannels.set(agentName, opened);
+            // A resident's own open/focus is the only thing that moves a
+            // sticky speaking room.
+            if (this.agents.get(agentName)?.speakingRoom) this.setSpeakingRoom(agentName, opened);
             const openerAgent = this.agents.get(agentName);
             if (openerAgent && (openerAgent.proseRouting === 'locus' || openerAgent.proseRouting === 'hybrid')) {
               this.turnLocusPins.set(agentName, opened);
@@ -14225,7 +14284,7 @@ export class AgentFramework {
                 },
               };
               console.error(
-                `[routing] ${agentName}: channel_open -> pin moved to ${opened} (announced in tool result)`,
+                `[routing] ${agentName}: ${call.name} -> pin moved to ${opened} (announced in tool result)`,
               );
             }
           }

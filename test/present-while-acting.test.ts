@@ -174,7 +174,10 @@ describe('present while acting', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  async function createFramework(proseDelivery?: 'live' | 'terminal'): Promise<AgentFramework> {
+  async function createFramework(
+    proseDelivery?: 'live' | 'terminal',
+    speakingRoom?: { initialChannel: string },
+  ): Promise<AgentFramework> {
     const framework = await AgentFramework.create({
       storePath: join(tempDir, 'test.chronicle'),
       membrane: membrane.asMembrane(),
@@ -184,6 +187,7 @@ describe('present while acting', () => {
           model: 'test-model',
           systemPrompt: 'You are a robot pilot.',
           ...(proseDelivery ? { proseDelivery } : {}),
+          ...(speakingRoom ? { speakingRoom } : {}),
         },
       ],
       modules: [module],
@@ -473,6 +477,41 @@ describe('present while acting', () => {
       wired.some((s) => s.includes('[routing] The conversation moved to discord:dm:antra')),
       'the re-pin notice was injected alongside it',
     );
+
+    await framework.stop();
+  });
+
+  it('a sticky speaking room is not re-aimed by an addressed message from another room', async () => {
+    // Fable's lectern requirement (2026-09-24): the original failure was an
+    // inbound side-room message silently re-aiming outbound speech
+    // mid-stretch. With speakingRoom set, speech stays in the resident's own
+    // room at turn start and mid-turn; only its channel_focus/open moves it.
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'Station four, proceeding.' },
+      { type: 'tool_use', id: 'c1', name: 'robot--move', input: { dir: 'north' } },
+    ] as ContentBlock[], 'tool_use'));
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'Still speaking in my own room.' },
+    ] as ContentBlock[]));
+
+    const framework = await createFramework(undefined, { initialChannel: 'discord:g:salon' });
+    const routed = stubChannelRegistry(framework);
+    module.toolDelayMs = 25;
+    module.interjection = 'hey, quick question over here?';
+    module.interjectionMetadata = { channelId: 'discord:dm:antra', tags: ['chat:addressed'] };
+
+    trigger(framework);
+    await framework.runUntilIdle();
+
+    assert.deepEqual(routed, [
+      { text: 'Station four, proceeding.', locus: 'discord:g:salon' },
+      { text: 'Still speaking in my own room.', locus: 'discord:g:salon' },
+    ]);
+    const wired = membrane.lastStream!.receivedToolResultOptions
+      .flatMap((o) => o?.injectedMessages ?? [])
+      .map((m) => JSON.stringify(m.content));
+    assert.ok(wired.some((s) => s.includes('quick question')), 'the addressed message still reaches the resident');
+    assert.ok(!wired.some((s) => s.includes('The conversation moved to')), 'no re-pin notice');
 
     await framework.stop();
   });

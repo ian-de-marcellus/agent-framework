@@ -121,6 +121,23 @@ test('handleIncoming REJECTS an unknown channel instead of minting it (§14.5)',
   assert.equal(registry.resolveLocus('cairn'), null, 'a rejected message must not establish a locus');
 });
 
+test('channel_focus resolves a known room without opening or publishing to it', async () => {
+  const { registry, openCalls, publishCalls, lookup } = makeRegistry({ delivered: true });
+  seedRegistered(registry, 'discord', 'salon');
+
+  const result = await registry.handleChannelToolCall(
+    'channel_focus',
+    { channelId: 'salon', serverId: 'discord' },
+    { kind: 'agent', agentName: 'Fable' },
+  );
+
+  assert.equal(result.success, true);
+  assert.deepEqual(result.data, { channelId: 'salon', label: 'salon', status: 'focused' });
+  assert.equal(lookup('salon')?.open, false);
+  assert.deepEqual(openCalls, []);
+  assert.deepEqual(publishCalls, []);
+});
+
 test('routeSpeech surfaces a failure when the server reports delivered:false', async () => {
   const { registry, failures, traces } = makeRegistry({ delivered: false });
   seedRegistered(registry, 'discord', 'ch-x');

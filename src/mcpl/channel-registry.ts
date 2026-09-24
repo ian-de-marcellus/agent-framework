@@ -338,6 +338,22 @@ const CHANNEL_TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
+    name: 'channel_focus',
+    description:
+      'Move where your ordinary speech lands to an already known channel, without ' +
+      'opening it or sending anything there. For residents with a sticky speaking ' +
+      'room this is the only way (besides channel_open) that room changes; incoming ' +
+      'messages and one-off sends never move it.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        channelId: { type: 'string', description: 'Known channel id to make your speaking room' },
+        serverId: { type: 'string', description: 'Owning MCPL server; required only when channelId is ambiguous.' },
+      },
+      required: ['channelId'],
+    },
+  },
+  {
     name: 'channel_decline',
     description:
       'Deliberately remain closed after being addressed in a closed channel. Optionally ' +
@@ -1196,6 +1212,9 @@ export class ChannelRegistry {
           beforeMessageId?: string;
         });
 
+      case 'channel_focus':
+        return this.handleToolFocus(input as { channelId: string; serverId?: string });
+
       case 'channel_close':
         return this.handleToolClose(
           input as {
@@ -1227,6 +1246,21 @@ export class ChannelRegistry {
       default:
         return { success: false, error: `Unknown channel tool: ${toolName}`, isError: true };
     }
+  }
+
+  private handleToolFocus(input: { channelId: string; serverId?: string }): ToolResult {
+    const resolved = this.resolveToolChannelEntry(input.channelId, input.serverId);
+    if (!resolved.entry) {
+      return { success: false, error: resolved.error, isError: true };
+    }
+    return {
+      success: true,
+      data: {
+        channelId: resolved.entry.descriptor.id,
+        label: resolved.entry.descriptor.label,
+        status: 'focused',
+      },
+    };
   }
 
   // ==========================================================================
