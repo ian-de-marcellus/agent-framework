@@ -89,6 +89,8 @@ export class Agent {
   readonly proseDelivery: NonNullable<AgentConfig['proseDelivery']>;
   /** Silencing scope (see AgentConfig.proseSilencing). Default 'turn'. */
   readonly proseSilencing: NonNullable<AgentConfig['proseSilencing']>;
+  /** Post a room notice when a turn fails (see AgentConfig.failureNotices). */
+  readonly failureNotices: boolean;
   /** Sticky speaking room config (see AgentConfig.speakingRoom). */
   readonly speakingRoom: AgentConfig['speakingRoom'];
   /** Exact whole-response known-tool wrapper containment (default off). */
@@ -156,6 +158,7 @@ export class Agent {
     this.proseRouting = config.proseRouting ?? 'locus';
     this.proseDelivery = config.proseDelivery ?? 'live';
     this.proseSilencing = config.proseSilencing ?? 'turn';
+    this.failureNotices = config.failureNotices === true;
     this.speakingRoom = config.speakingRoom;
     this.toolWrapperProseGuard = config.toolWrapperProseGuard ?? false;
     this.cacheTtl = config.cacheTtl ?? '1h';

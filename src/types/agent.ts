@@ -251,6 +251,13 @@ export interface AgentConfig {
   proseSilencing?: 'turn' | 'round';
 
   /**
+   * Post a short automatic notice to the agent's speaking room when a turn
+   * fails outright (model call error, refusal, over-budget) — first failure
+   * of a streak and every 5th after. Default false.
+   */
+  failureNotices?: boolean;
+
+  /**
    * Sticky speaking room ("lectern"). When set, the resident's ordinary speech
    * goes to its chosen room every turn: inbound traffic — even an addressed
    * message from another room, at turn start or mid-turn — never moves it.
