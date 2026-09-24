@@ -240,6 +240,17 @@ export interface AgentConfig {
   proseDelivery?: ProseDeliveryMode;
 
   /**
+   * How far an explicit send (send_message, channel_publish, skip_reply, …)
+   * silences the turn's auto-routed prose.
+   * - 'turn' (default): from the round it occurs to the end of the turn.
+   * - 'round': only that round's prose; later rounds, including the final
+   *   prose, deliver normally. For long tool-using turns where an early send
+   *   should not discard the turn's closing words.
+   * Either way, a round whose sends all FAILED releases its held prose.
+   */
+  proseSilencing?: 'turn' | 'round';
+
+  /**
    * Sticky speaking room ("lectern"). When set, the resident's ordinary speech
    * goes to its chosen room every turn: inbound traffic — even an addressed
    * message from another room, at turn start or mid-turn — never moves it.
