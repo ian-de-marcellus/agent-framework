@@ -9963,9 +9963,15 @@ export class AgentFramework {
                 .filter((b) => b.type === 'tool_use')
                 .map((b) => (b as unknown as { name?: string }).name)
                 .filter((n): n is string => typeof n === 'string');
-              const silenced = liveProseRouting || roundScopedSilencing
-                ? turnSilenced
-                : turnSilenced || toolNames.some(isSilencingTool);
+              // 'round' with live routing: the trailing prose is its own final
+              // round, which made no tool calls, so no send silenced it. The
+              // flag still holds the last TOOL round's value and must not carry
+              // over (Librarian, 2026-09-24: #library send, then #math answer).
+              const silenced = roundScopedSilencing && liveProseRouting
+                ? false
+                : liveProseRouting || roundScopedSilencing
+                  ? turnSilenced
+                  : turnSilenced || toolNames.some(isSilencingTool);
 
               // Terminal delivery never falls back to publishing the whole
               // accumulated tool turn: terminalContent still identifies the

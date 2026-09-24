@@ -425,6 +425,27 @@ describe('present while acting', () => {
     await framework.stop();
   });
 
+  it("proseSilencing 'round': closing prose right after a send round still delivers", async () => {
+    // Librarian, 2026-09-24: send to one room, then answer in plain prose in
+    // the very next (tool-free) round. The final round had no tool calls, so
+    // nothing silenced it; the flag from the send round must not carry over.
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'private planning' },
+      { type: 'tool_use', id: 'c1', name: 'robot--send_message', input: { text: 'datum for the other room' } },
+    ] as ContentBlock[], 'tool_use'));
+    membrane.pushResponse(createMockResponse([
+      { type: 'text', text: 'The answer for this room.' },
+    ] as ContentBlock[]));
+
+    const framework = await createFramework(undefined, undefined, { proseSilencing: 'round' });
+    const routed = stubChannelRegistry(framework);
+    trigger(framework);
+    await framework.runUntilIdle();
+
+    assert.deepEqual(routed.map((r) => r.text), ['The answer for this room.']);
+    await framework.stop();
+  });
+
   it("Librarian's shape: terminal delivery + round silencing keeps the closing prose after an early send", async () => {
     membrane.pushResponse(createMockResponse([
       { type: 'text', text: 'working notes' },
