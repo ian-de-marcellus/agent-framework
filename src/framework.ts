@@ -4859,7 +4859,9 @@ export class AgentFramework {
       'View an image file from a workspace mount. The image is returned into ' +
       'your context so you can actually see it (e.g. after save_recent_image, ' +
       'or for images placed in the workspace by other means). Path is ' +
-      'mount-prefixed, e.g. "project/photos/cat.png". Supports png/jpeg/gif/webp.',
+      'mount-prefixed, e.g. "project/photos/cat.png". Supports png/jpeg/gif/webp. ' +
+      'If several images may remain in one model request, resize each to at most ' +
+      '2000 px on its longest edge first; providers reject larger many-image requests.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -14483,8 +14485,9 @@ export class AgentFramework {
         if (typeof input.path !== 'string' || input.path.length === 0) {
           throw new Error('read_image: `path` (mount-prefixed) is required');
         }
-        // Anthropic rejects images >5MB (and >8000px); guard the hard byte
-        // limit here — resizing is out of scope without an image library.
+        // Anthropic rejects images >5MB (and applies provider-side dimension
+        // limits, including 2000px for many-image requests); guard the hard
+        // byte limit here. Resizing is out of scope without an image library.
         const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
         // Prefer the workspace module's own read_image handler when it exists:
         // it reads tree-first with a FILESYSTEM FALLBACK, so binaries that live

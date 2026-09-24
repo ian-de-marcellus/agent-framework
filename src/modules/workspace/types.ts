@@ -219,6 +219,10 @@ export interface SyncInput {
   path?: string;
   /** Specific mount (optional — defaults to all) */
   mount?: string;
+  /** Maximum path/conflict/skip detail entries returned (default 100, hard max 200) */
+  maxReportedItems?: number;
+  /** Approximate character budget for returned detail entries (default 8000, hard max 16000) */
+  maxReportedChars?: number;
 }
 
 // ============================================================================

@@ -35,7 +35,15 @@ import type {
 } from './types.js';
 import { WORKSPACE_FS_EVENT_TYPES, opToEventType } from './types.js';
 import { MountWatcher, type FsChange } from './watcher.js';
-import { syncFromFs, materializeToFs, hashContent, isBinary, DEFAULT_MAX_FILE_SIZE, type ConflictInfo } from './sync.js';
+import {
+  syncFromFs,
+  materializeToFs,
+  hashContent,
+  isBinary,
+  DEFAULT_MAX_FILE_SIZE,
+  type ConflictInfo,
+  type SyncResult,
+} from './sync.js';
 
 export type {
   WorkspaceConfig,
@@ -169,6 +177,23 @@ const JPEG_SOI = 0xd8;
 const JPEG_EOI = 0xd9;
 const JPEG_SOS = 0xda;
 const JPEG_TEM = 0x01;
+const DEFAULT_SYNC_REPORT_MAX_ITEMS = 100;
+const MAX_SYNC_REPORT_MAX_ITEMS = 200;
+const DEFAULT_SYNC_REPORT_MAX_CHARS = 8_000;
+const MAX_SYNC_REPORT_MAX_CHARS = 16_000;
+
+function resolveSyncReportLimit(
+  value: number | undefined,
+  name: string,
+  defaultValue: number,
+  hardMax: number,
+): number {
+  if (value === undefined) return defaultValue;
+  if (!Number.isSafeInteger(value) || value < 0 || value > hardMax) {
+    throw new Error(`${name} must be a safe integer from 0 to ${hardMax}`);
+  }
+  return value;
+}
 
 function isErrnoCode(err: unknown, code: string): boolean {
   return typeof err === 'object' && err !== null && 'code' in err && (err as { code?: unknown }).code === code;
@@ -951,7 +976,7 @@ export class WorkspaceModule implements Module {
       },
       {
         name: 'read_image',
-        description: 'Read an image file from the workspace and return native image content.',
+        description: 'Read an image file from the workspace and return native image content. For workflows that may place several images in one model request, resize every image to at most 2000 px on its longest edge first; providers reject oversized images in many-image requests.',
         inputSchema: {
           type: 'object' as const,
           properties: {
@@ -1059,12 +1084,14 @@ export class WorkspaceModule implements Module {
       },
       {
         name: 'sync',
-        description: 'Pull filesystem state into the workspace. Detects user changes on disk.',
+        description: 'Pull filesystem state into the workspace. Detects user changes on disk. Returns exact totals plus a bounded preview of paths; use mount/path to narrow a large sync.',
         inputSchema: {
           type: 'object' as const,
           properties: {
             path: { type: 'string', description: 'Specific path to sync (optional — defaults to all)' },
             mount: { type: 'string', description: 'Specific mount (optional)' },
+            maxReportedItems: { type: 'number', description: 'Maximum path/conflict/skip detail entries to return (default 100; hard maximum 200; use 0 for counts only)' },
+            maxReportedChars: { type: 'number', description: 'Approximate character budget for detail entries (default 8000; hard maximum 16000; use 0 for counts only)' },
           },
         },
       },
@@ -2361,8 +2388,45 @@ export class WorkspaceModule implements Module {
 
   private async handleSync(input: SyncInput): Promise<ToolResult> {
     const store = this.getStore();
-    const allResults: Array<{ mount: string; synced: string[]; conflicts: ConflictInfo[] }> = [];
-    const allSkipped: Array<{ mount: string; path: string; reason: string }> = [];
+    let maxReportedItems: number;
+    let maxReportedChars: number;
+    try {
+      maxReportedItems = resolveSyncReportLimit(
+        input.maxReportedItems,
+        'maxReportedItems',
+        DEFAULT_SYNC_REPORT_MAX_ITEMS,
+        MAX_SYNC_REPORT_MAX_ITEMS,
+      );
+      maxReportedChars = resolveSyncReportLimit(
+        input.maxReportedChars,
+        'maxReportedChars',
+        DEFAULT_SYNC_REPORT_MAX_CHARS,
+        MAX_SYNC_REPORT_MAX_CHARS,
+      );
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+        isError: true,
+      };
+    }
+
+    const rawResults: Array<{ mount: string; result: SyncResult }> = [];
+    let totalSynced = 0;
+    let totalConflicts = 0;
+    let totalSkipped = 0;
+    let reportedItems = 0;
+    let reportedChars = 0;
+
+    const includeDetail = (detail: unknown): boolean => {
+      const chars = JSON.stringify(detail).length;
+      if (reportedItems >= maxReportedItems || reportedChars + chars > maxReportedChars) {
+        return false;
+      }
+      reportedItems++;
+      reportedChars += chars;
+      return true;
+    };
 
     let mountsToSync: Array<{ name: string; mount: MountState }>;
     if (input.mount) {
@@ -2387,28 +2451,78 @@ export class WorkspaceModule implements Module {
       const result = await syncFromFs(store, mount, paths);
       mount.initialSyncDone = true;
 
+      totalSynced += result.synced.length;
+      totalConflicts += result.conflicts.length;
+      totalSkipped += result.skipped.length;
+      rawResults.push({ mount: name, result });
+
       if (result.synced.length > 0 || result.conflicts.length > 0) {
-        allResults.push({
-          mount: name,
-          synced: result.synced.map(s => s.path),
-          conflicts: result.conflicts,
-        });
         this.emitFsEvents(name, result.synced, result.conflicts);
       }
+    }
+
+    // Report exceptional details before routine synced paths. Otherwise one
+    // enormous mount can exhaust the preview budget and hide the conflicts or
+    // refused files that actually need the resident's attention.
+    const conflictPreviews = rawResults.map((): ConflictInfo[] => []);
+    const syncedPreviews = rawResults.map((): string[] => []);
+    const allSkipped: Array<{ mount: string; path: string; reason: string }> = [];
+
+    rawResults.forEach(({ result }, index) => {
+      for (const conflict of result.conflicts) {
+        if (includeDetail(conflict)) conflictPreviews[index]!.push(conflict);
+      }
+    });
+    rawResults.forEach(({ mount, result }) => {
       // Skips were previously computed and dropped, so "nothing synced" and
       // "your file was refused" looked identical from the outside. Say which.
-      for (const s of result.skipped) {
-        allSkipped.push({ mount: name, path: s.path, reason: s.reason });
+      for (const skipped of result.skipped) {
+        const detail = { mount, path: skipped.path, reason: skipped.reason };
+        if (includeDetail(detail)) allSkipped.push(detail);
       }
-    }
+    });
+    rawResults.forEach(({ result }, index) => {
+      for (const synced of result.synced) {
+        if (includeDetail(synced.path)) syncedPreviews[index]!.push(synced.path);
+      }
+    });
+
+    const allResults = rawResults.flatMap(({ mount, result }, index) => {
+      if (result.synced.length === 0 && result.conflicts.length === 0) return [];
+      const synced = syncedPreviews[index]!;
+      const conflicts = conflictPreviews[index]!;
+      return [{
+        mount,
+        synced,
+        conflicts,
+        totalSynced: result.synced.length,
+        totalConflicts: result.conflicts.length,
+        omittedSynced: result.synced.length - synced.length,
+        omittedConflicts: result.conflicts.length - conflicts.length,
+      }];
+    });
+
+    const totalDetailItems = totalSynced + totalConflicts + totalSkipped;
+    const omittedItems = totalDetailItems - reportedItems;
 
     return {
       success: true,
       data: {
         results: allResults,
-        totalSynced: allResults.reduce((sum, r) => sum + r.synced.length, 0),
-        totalConflicts: allResults.reduce((sum, r) => sum + r.conflicts.length, 0),
+        totalSynced,
+        totalConflicts,
+        totalSkipped,
         ...(allSkipped.length > 0 ? { skipped: allSkipped } : {}),
+        report: {
+          reportedItems,
+          omittedItems,
+          maxReportedItems,
+          maxReportedChars,
+          truncated: omittedItems > 0,
+        },
+        ...(omittedItems > 0
+          ? { note: 'Path details were truncated; totals are exact. Use mount/path to narrow the sync.' }
+          : {}),
       },
     };
   }

@@ -310,7 +310,7 @@ test('tool inventory/schema includes workspace--read_image', async (t) => {
 
   const tool = framework.getAllTools().find((entry) => entry.name === 'workspace--read_image');
   assert.ok(tool);
-  assert.equal(tool.description, 'Read an image file from the workspace and return native image content.');
+  assert.match(tool.description, /2000 px/);
   assert.deepEqual(tool.inputSchema, {
     type: 'object',
     properties: {
@@ -318,6 +318,10 @@ test('tool inventory/schema includes workspace--read_image', async (t) => {
     },
     required: ['path'],
   });
+
+  const synthesizedTool = framework.getAllTools().find((entry) => entry.name === 'read_image');
+  assert.ok(synthesizedTool);
+  assert.match(synthesizedTool.description, /2000 px/);
 });
 
 test('valid tiny PNG, JPEG, GIF, and WebP return native image content with exact bytes and MIME', async (t) => {
