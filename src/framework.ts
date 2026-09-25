@@ -9795,6 +9795,42 @@ export class AgentFramework {
               stopReason: response.stopReason,
             });
 
+            // A turn that spent its whole output budget thinking ends at
+            // max_tokens with no reply and no tool call. It used to vanish:
+            // nothing stored (an empty or thinking-only response is not
+            // persisted), nothing sent, nothing logged: from outside, "thinking,
+            // then nothing" (Fable, 2026-09-25: two ~5-minute turns). Say so,
+            // loudly in the log and quietly (non-waking) to the agent.
+            if (
+              response.stopReason === 'max_tokens' &&
+              !guardedWrapperTool &&
+              !terminalContent.some((b) =>
+                b.type === 'tool_use' ||
+                (b.type === 'text' && typeof (b as { text?: unknown }).text === 'string' &&
+                  ((b as { text: string }).text).trim().length > 0))
+            ) {
+              const outTok = response.details?.usage?.outputTokens;
+              console.error(
+                `[out-of-budget] agent=${agent.name}: turn hit max_tokens (${outTok ?? '?'} output tokens, cap ${agent.maxTokens}) ` +
+                `with no reply or tool call in its final round — ${hadToolCalls ? 'nothing further' : 'nothing'} was sent`,
+              );
+              try {
+                this.addMessage(
+                  'user',
+                  [{
+                    type: 'text',
+                    text: hadToolCalls
+                      ? '[out-of-budget] Your last turn ran out of output budget while thinking, after its tool calls and before writing anything further, so nothing more was sent.'
+                      : '[out-of-budget] Your last turn used its whole output budget while thinking and ended before any reply or tool call, so nothing was sent.',
+                  }],
+                  { system: true, kind: 'out-of-budget' },
+                  { forAgent: agent.name },
+                );
+              } catch (err) {
+                console.error('[out-of-budget] failed to record notice:', err);
+              }
+            }
+
             // Surface refusals instead of going silently mute: stderr line
             // (headless inference failures are otherwise under-logged) + an
             // emoji reaction on the triggering Discord message, keyed by the
