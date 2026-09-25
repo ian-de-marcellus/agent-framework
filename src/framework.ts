@@ -8339,6 +8339,34 @@ export class AgentFramework {
    * no destination" is the unremarkable boot default). Never triggers
    * inference; never locus-eligible itself (system + no channel metadata).
    */
+  /**
+   * One-turn routing notice for speakingRoom.replyRooms. Deliberately does
+   * NOT move the announce-on-change baseline: the resident's standing room is
+   * unchanged, so the return to it next turn needs no second notice.
+   */
+  private announceReplyTurn(agentName: string, wokenFrom: string, room: string): void {
+    const agent = this.agents.get(agentName);
+    if (!agent) return;
+    const show = (id: string): string => {
+      const label = this.channelRegistry?.getDescriptor(id)?.label;
+      return label && label !== id ? (label.startsWith('#') ? label : `#${label}`) : id;
+    };
+    const text =
+      `[routing] This turn you were woken from ${show(wokenFrom)}, so your plain speech goes there. ` +
+      `Your speaking room stays ${show(room)}; the next turn returns to it.`;
+    try {
+      const id = agent.getContextManager().addMessage(
+        'user',
+        [{ type: 'text', text }],
+        { system: true, kind: 'routing-notice' },
+      );
+      this.emitTrace({ type: 'message:added', messageId: id, source: 'routing-notice' });
+      console.error(`[routing] ${agentName}: reply turn -> ${wokenFrom} (room stays ${room})`);
+    } catch (err) {
+      console.error('announceReplyTurn: failed to record routing notice:', err);
+    }
+  }
+
   private announceLocusIfChanged(agentName: string, locus: string | null): void {
     const hasBaseline = this.lastAnnouncedLocus.has(agentName);
     const prev = this.lastAnnouncedLocus.get(agentName) ?? null;
@@ -8927,11 +8955,22 @@ export class AgentFramework {
         this.midTurnInputSignals.delete(agent.name);
         this.turnLocusPins.delete(agent.name);
       } else {
-        const locus = this.stickySpeakingRoom(agent.name) ?? this.channelRegistry?.resolveLocus(agent.name) ?? null;
+        const sticky = this.stickySpeakingRoom(agent.name);
+        // speakingRoom.replyRooms: a turn woken from one of these rooms answers
+        // there for this turn only (the trigger channel, set above; batched
+        // wakes already prefer addressed requests). The speaking room stays
+        // the resting state: nothing here moves it.
+        const wokenFrom = sticky ? this.activeTriggerChannels.get(agent.name) : undefined;
+        const replyTurn = !!wokenFrom && wokenFrom !== sticky &&
+          (agent.speakingRoom?.replyRooms ?? []).includes(wokenFrom);
+        const locus = (replyTurn ? wokenFrom! : sticky) ?? this.channelRegistry?.resolveLocus(agent.name) ?? null;
         if (locus !== null) this.turnLocusPins.set(agent.name, locus);
         else this.turnLocusPins.delete(agent.name);
         this.midTurnInputSignals.delete(agent.name);
-        if (attempt === 0) this.announceLocusIfChanged(agent.name, locus);
+        if (attempt === 0) {
+          if (replyTurn) this.announceReplyTurn(agent.name, wokenFrom!, sticky!);
+          else this.announceLocusIfChanged(agent.name, locus);
+        }
       }
     }
 

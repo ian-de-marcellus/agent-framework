@@ -264,8 +264,14 @@ export interface AgentConfig {
    * Only the resident's own channel_focus or channel_open does, and the choice
    * persists across restarts (speaking-rooms.json beside the store).
    * `initialChannel` seeds it when nothing is persisted yet.
+   *
+   * `replyRooms` (opt-in): channel ids whose wakes are answered in place. A
+   * turn WOKEN by a message from one of these rooms speaks there, for that
+   * turn only; the speaking room stays the resting state and the next turn
+   * returns to it. Wakes from any other room never move the speech. The
+   * resident is told with a one-turn routing notice.
    */
-  speakingRoom?: { initialChannel: string };
+  speakingRoom?: { initialChannel: string; replyRooms?: string[] };
 
   /**
    * Fail-closed containment for a text response whose entire visible prose is

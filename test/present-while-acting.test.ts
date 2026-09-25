@@ -425,6 +425,61 @@ describe('present while acting', () => {
     await framework.stop();
   });
 
+  /** Queue a turn woken by a channel message (what mcpl:channel-incoming
+   *  enqueues), or with no channel (a heartbeat/timer-style wake). */
+  function wokenFrom(framework: AgentFramework, channelId?: string): void {
+    (framework as unknown as { pendingRequests: unknown[] }).pendingRequests.push({
+      agentName: 'assistant', reason: channelId ? 'mcpl:channel-incoming' : 'timer', source: 'test', timestamp: Date.now(),
+      ...(channelId ? { channelId } : {}),
+    });
+  }
+  const notices = (framework: AgentFramework): string[] =>
+    JSON.stringify((framework.getAgent('assistant')!.getContextManager() as unknown as { messageStore: { getAll(): unknown[] } }).messageStore.getAll())
+      .match(/This turn you were woken from [^"]*/g) ?? [];
+  const room = (replyRooms?: string[]) => ({ initialChannel: 'room-a', ...(replyRooms ? { replyRooms } : {}) }) as never;
+
+  it('speakingRoom.replyRooms: a wake from a listed room is answered there, for that turn only', async () => {
+    // (MockMembrane.streamYielding takes every queued response into one turn's
+    // stream, so queue each turn's response just before that turn.)
+    membrane.pushResponse(createMockResponse([{ type: 'text', text: 'Answer for the library.' }] as ContentBlock[]));
+    const framework = await createFramework(undefined, room(['library']));
+    const routed = stubChannelRegistry(framework);
+    wokenFrom(framework, 'library');
+    await framework.runUntilIdle();
+    membrane.pushResponse(createMockResponse([{ type: 'text', text: 'Back in the room.' }] as ContentBlock[]));
+    wokenFrom(framework); // next turn: a wake with no channel
+    await framework.runUntilIdle();
+    assert.deepEqual(routed.map((r) => [r.text, r.locus]), [
+      ['Answer for the library.', 'library'],
+      ['Back in the room.', 'room-a'],
+    ]);
+    assert.equal(framework.getSpeakingRoom('assistant'), 'room-a', 'the speaking room never moved');
+    assert.equal(notices(framework).length, 1, 'one reply-turn notice');
+    await framework.stop();
+  });
+
+  it('replyRooms: a wake from an unlisted room keeps the speaking room', async () => {
+    membrane.pushResponse(createMockResponse([{ type: 'text', text: 'Still in the room.' }] as ContentBlock[]));
+    const framework = await createFramework(undefined, room(['library']));
+    const routed = stubChannelRegistry(framework);
+    wokenFrom(framework, 'busy-room');
+    await framework.runUntilIdle();
+    assert.deepEqual(routed.map((r) => r.locus), ['room-a']);
+    assert.equal(notices(framework).length, 0);
+    await framework.stop();
+  });
+
+  it('without replyRooms the sticky room holds (unchanged behaviour)', async () => {
+    membrane.pushResponse(createMockResponse([{ type: 'text', text: 'Still in the room.' }] as ContentBlock[]));
+    const framework = await createFramework(undefined, room());
+    const routed = stubChannelRegistry(framework);
+    wokenFrom(framework, 'library');
+    await framework.runUntilIdle();
+    assert.deepEqual(routed.map((r) => r.locus), ['room-a']);
+    assert.equal(notices(framework).length, 0);
+    await framework.stop();
+  });
+
   it("proseSilencing 'round': closing prose right after a send round still delivers", async () => {
     // Librarian, 2026-09-24: send to one room, then answer in plain prose in
     // the very next (tool-free) round. The final round had no tool calls, so
