@@ -726,6 +726,40 @@ export class Agent {
    * `ContextManager.compile` is itself side-effect-free (compression runs in
    * the background). Safe to call regardless of the agent's current status.
    */
+  /**
+   * Host-supplied: is this agent's provider prompt cache 'cold' (expired, so
+   * the next request rewrites the prefix anyway) or 'warm'? `undefined` =
+   * unknown. Read right before each inference compile and handed to the
+   * context strategy (`setPromptCacheState`, e.g. context-manager's
+   * kvStableCacheAware), which may time memory refolds to cold moments.
+   */
+  promptCacheProbe?: () => 'cold' | 'warm' | undefined;
+
+  private applyPromptCacheState(): void {
+    const strategy = (this.contextManager as unknown as { getStrategy?: () => unknown })
+      .getStrategy?.() as { setPromptCacheState?: (s: 'cold' | 'warm' | undefined) => void } | undefined;
+    if (!strategy?.setPromptCacheState) return;
+    let state: 'cold' | 'warm' | undefined;
+    try {
+      state = this.promptCacheProbe?.();
+    } catch {
+      state = undefined; // unknown is always safe (classic behaviour)
+    }
+    strategy.setPromptCacheState(state);
+  }
+
+  /** True when the last compile deferred a memory refold to wait for a cold
+   *  cache (a cache-aware strategy); false otherwise or when unsupported. */
+  isRefoldDeferred(): boolean {
+    const strategy = (this.contextManager as unknown as { getStrategy?: () => unknown })
+      .getStrategy?.() as { isRefoldDeferred?: () => boolean } | undefined;
+    try {
+      return strategy?.isRefoldDeferred?.() === true;
+    } catch {
+      return false;
+    }
+  }
+
   async buildActivationRequest(
     availableTools: ToolDefinition[],
     injections?: ContextInjection[],
@@ -851,6 +885,9 @@ export class Agent {
     this.lastStreamRealInputTokens = 0;
     this.lastStreamOutputTokens = 0;
 
+    // Tell a cache-aware strategy whether the provider's prompt cache is cold
+    // or warm before this compile (only for real inference, never previews).
+    this.applyPromptCacheState();
     const request = await this.buildActivationRequest(availableTools, injections, budget);
     // Hooks/context compilation above may yield while retirement is sealed.
     // Never let a stale public Agent reference start a provider afterward.

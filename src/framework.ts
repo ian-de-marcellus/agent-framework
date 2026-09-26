@@ -1370,6 +1370,7 @@ export class AgentFramework {
   private discordAwarenessDeadlineMs = DEFAULT_DISCORD_AWARENESS_DEADLINE_MS;
   /** FrameworkConfig.proseOutbox with its queue path resolved. */
   private proseOutboxConfig: ProseOutboxConfig | undefined;
+  private promptCacheProbe: ((agentName: string) => 'cold' | 'warm' | undefined) | undefined;
   /** Durable JSONL record of operator-initiated mutations (see operator-log.ts). */
   private readonly operatorLog: OperatorLog;
   /**
@@ -4501,6 +4502,7 @@ export class AgentFramework {
     }
     // Register temporarily so the event loop can drive it
     this.agents.set(agent.name, agent);
+    if (this.promptCacheProbe) { const probe = this.promptCacheProbe; agent.promptCacheProbe = () => probe(agent.name); }
     const run: EphemeralRun = {
       settle: this.createDeferred<AgentSettleResult>(),
       inferenceStarted: false,
@@ -6856,6 +6858,7 @@ export class AgentFramework {
       );
     }
     this.agents.set(config.name, agent);
+    if (this.promptCacheProbe) { const probe = this.promptCacheProbe; agent.promptCacheProbe = () => probe(agent.name); }
     this.agentConfigs.set(config.name, config);
 
     // First non-ephemeral agent becomes the primary for message routing
@@ -6924,6 +6927,7 @@ export class AgentFramework {
     };
     const agent = new Agent(agentConfig, contextManager, this.membrane);
     this.agents.set(name, agent);
+    if (this.promptCacheProbe) { const probe = this.promptCacheProbe; agent.promptCacheProbe = () => probe(agent.name); }
     this.agentConfigs.set(name, agentConfig);
     this.subconsciousAgentName = name;
     this.subconsciousStrategy = strategy;
@@ -7712,6 +7716,7 @@ export class AgentFramework {
         () => this.agentTerminalReason(name),
       );
       this.agents.set(name, agent);
+      if (this.promptCacheProbe) { const probe = this.promptCacheProbe; agent.promptCacheProbe = () => probe(agent.name); }
       this.agentConfigs.set(name, config);
       this.conversationAgentHomes.set(name, channelId);
       return agent;
@@ -8389,6 +8394,24 @@ export class AgentFramework {
       for (const g of s.givenUp) lines.push(`- ${g.id.slice(0, 8)} · ${this.describeChannelForAgent(g.channelId)} · written ${g.writtenAt} · ${g.reason}`);
     }
     return { success: true, data: [{ type: 'text', text: lines.join('\n') }] };
+  }
+
+  /**
+   * Host-supplied prompt-cache probe: for an agent, is the provider cache
+   * 'cold' (expired) or 'warm' (undefined = unknown)? Applied to every agent
+   * now and to agents created later; read before each inference compile.
+   */
+  setPromptCacheProbe(probe: ((agentName: string) => 'cold' | 'warm' | undefined) | undefined): void {
+    this.promptCacheProbe = probe;
+    for (const agent of this.agents.values()) {
+      agent.promptCacheProbe = probe ? () => probe(agent.name) : undefined;
+    }
+  }
+
+  /** Whether an agent's last compile deferred a memory refold until the
+   *  cache is cold (a host keepalive may then let the cache lapse). */
+  isRefoldDeferred(agentName: string): boolean {
+    return this.agents.get(agentName)?.isRefoldDeferred() ?? false;
   }
 
   /** Operator view of the delivery queue (all agents); for hosts and dashboards. */
