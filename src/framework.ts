@@ -8329,9 +8329,11 @@ export class AgentFramework {
     const { entry } = event;
     const where = this.describeChannelForAgent(entry.channelId);
     const at = (t: number) => formatZonedTime(t, this.timeZone);
+    const until = (t: number) => (Number.isFinite(t) ? `until ${at(t)}` : 'until it is delivered');
     // Name WHICH reply: several can be queued at once, in order.
     const words = entry.text.replace(/\s+/g, ' ').trim();
-    const what = entry.tool ? `Your ${entry.tool.name}` : 'Your reply';
+    // A notice is the framework's words, not the agent's: don't credit it.
+    const what = entry.tool ? `Your ${entry.tool.name}` : entry.notice ? 'The automatic notice' : 'Your reply';
     const which = words
       ? `${what} to ${where} starting "${words.slice(0, 40)}${words.length > 40 ? '…' : ''}"`
       : `${what} to ${where} (attachments only)`;
@@ -8348,8 +8350,8 @@ export class AgentFramework {
             'The retry checks the channel first and won\'t post it twice if it finds it; if that check can\'t be made, a duplicate is possible. '
           : `[delivery-delayed] ${which} couldn't be delivered yet (${event.reason}). `) +
           (this.proseOutboxConfig?.path
-            ? `It is queued, kept across restarts, and will be retried until ${at(event.expiresAt)}; you don't need to resend it.`
-            : `It is queued and will be retried until ${at(event.expiresAt)}, but only in memory: a restart before then loses it, so keep your own copy if it matters.`);
+            ? `It is queued, kept across restarts, and will be retried ${until(event.expiresAt)}; you don't need to resend it.`
+            : `It is queued and will be retried ${until(event.expiresAt)}, but only in memory: a restart before then loses it, so keep your own copy if it matters.`);
         break;
       case 'delivered-late':
         kind = 'delivered-late';
@@ -8364,7 +8366,9 @@ export class AgentFramework {
           ? `[discord-send-failed] ${which}, written at ${at(entry.writtenAt)}, could not be confirmed (${event.reason}). ` +
             'It is no longer held and won\'t be retried. It may already be in the channel: check before sending it again.'
           : `[discord-send-failed] ${which}, written at ${at(entry.writtenAt)}, was never delivered (${event.reason}). ` +
-            'It is no longer held and won\'t be retried; the human did not receive it. If it still matters, send it again.';
+            (entry.notice
+              ? 'It is no longer held and won\'t be retried; the room was not told. If they should know, you can tell them.'
+              : 'It is no longer held and won\'t be retried; the human did not receive it. If it still matters, send it again.');
         text += undeliveredCopy(entry, event.savedTo);
         break;
     }
@@ -12604,7 +12608,8 @@ export class AgentFramework {
    * The chronicle marker already tells the resident; without this, people
    * see only silence and can't tell a dead turn from a quiet one. Posted on
    * the first failure of a streak and every 5th after, so a stuck loop can't
-   * flood the channel. Best-effort: a notice that can't be delivered is
+   * flood the channel. With the prose outbox on, an undeliverable notice is
+   * queued as a notice (kept until delivered by default); without it, it is
    * dropped (the stderr/failures.log records remain).
    */
   private postFailureNotice(agentName: string, streak: number, what: string): void {
@@ -12619,7 +12624,7 @@ export class AgentFramework {
       `⚠️ [automatic notice] ${agentName}'s reply failed to generate` +
       `${streak > 1 ? ` (${streak} in a row)` : ''}: ${reason}. ` +
       'Nothing was lost from the conversation; it will see this and your messages on its next turn.';
-    void this.channelRegistry.routeSpeech(agentName, text, locus)
+    void this.channelRegistry.routeSpeech(agentName, text, locus, { notice: true })
       .catch((err) => console.error(`[inference-failed] failure notice not delivered for ${agentName}:`, err));
   }
 
